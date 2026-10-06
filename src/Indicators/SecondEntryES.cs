@@ -7,6 +7,7 @@ using System.Windows.Media;
 using NinjaTrader.Cbi;
 using NinjaTrader.Data;
 using NinjaTrader.Gui.Chart;
+using NinjaTrader.Gui.Tools;
 using NinjaTrader.NinjaScript;
 using NinjaTrader.NinjaScript.DrawingTools;
 using NinjaTrader.NinjaScript.Indicators;
