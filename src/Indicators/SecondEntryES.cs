@@ -1,11 +1,10 @@
-// SecondEntryES - clean-room NinjaTrader 8 discretionary price-action indicator.
+// SecondEntryES - clean-room NinjaTrader 8 price-action study. Never submits orders.
 #region Using declarations
 using System;
 using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
 using System.Windows.Media;
 using NinjaTrader.Cbi;
-using NinjaTrader.Data;
 using NinjaTrader.Gui.Chart;
 using NinjaTrader.Gui.Tools;
 using NinjaTrader.NinjaScript;
@@ -17,18 +16,14 @@ namespace NinjaTrader.NinjaScript.Indicators
 {
     public class SecondEntryES : Indicator
     {
-        private EMA trendEma;
-        private int downAttempts, upAttempts;
-        private double lastPullbackLow, lastPullbackHigh;
-        private int pendingLongBar = -1, pendingShortBar = -1;
-        private double pendingLongLow, pendingShortHigh;
+        private int longCount, shortCount;
+        private int longAnchorBar = -1, shortAnchorBar = -1;
+        private double longAnchorLow = double.NaN, shortAnchorHigh = double.NaN;
+        private bool longPullbackActive, shortPullbackActive;
+        private double longPullbackLow, shortPullbackHigh;
+        private double firstLongPullbackLow, firstShortPullbackHigh;
         private int longConfirmedBar = -1, shortConfirmedBar = -1;
         private double longSignalLow, shortSignalHigh;
-
-        [NinjaScriptProperty]
-        [Range(2, 200)]
-        [Display(Name = "EMA Period", GroupName = "Filters", Order = 0)]
-        public int EmaPeriod { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 10)]
@@ -41,27 +36,22 @@ namespace NinjaTrader.NinjaScript.Indicators
         public int BreakOffsetTicks { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Strict Signal Bars", GroupName = "Filters", Order = 1)]
+        [Display(Name = "Reset On Equal Extremes", GroupName = "Structure", Order = 2)]
+        public bool ResetOnEqualExtremes { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Strict Signal Bars", GroupName = "Filters", Order = 0)]
         public bool StrictSignalBars { get; set; }
 
         [NinjaScriptProperty]
         [Range(0.05, 1.0)]
-        [Display(Name = "Minimum Body %", GroupName = "Filters", Order = 2)]
+        [Display(Name = "Minimum Body %", GroupName = "Filters", Order = 1)]
         public double MinimumBodyPercent { get; set; }
 
         [NinjaScriptProperty]
         [Range(0.05, 0.50)]
-        [Display(Name = "Strong Close Zone %", GroupName = "Filters", Order = 3)]
+        [Display(Name = "Strong Close Zone %", GroupName = "Filters", Order = 2)]
         public double StrongCloseZonePercent { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(0.05, 1.0)]
-        [Display(Name = "Max Opposite Wick %", GroupName = "Filters", Order = 4)]
-        public double MaxOppositeWickPercent { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Reset On Equal Extremes", GroupName = "Structure", Order = 2)]
-        public bool ResetOnEqualExtremes { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 30)]
@@ -69,16 +59,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         public int FailureWindowBars { get; set; }
 
         [NinjaScriptProperty]
-        [Range(1, 100)]
-        [Display(Name = "Target Guide (Points)", GroupName = "Display", Order = 0)]
-        public int TargetGuidePoints { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Show Projections", GroupName = "Display", Order = 1)]
-        public bool ShowProjections { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Show Diagnostics", GroupName = "Display", Order = 2)]
+        [Display(Name = "Show Diagnostics", GroupName = "Display", Order = 0)]
         public bool ShowDiagnostics { get; set; }
 
         [NinjaScriptProperty]
@@ -89,87 +70,176 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (State == State.SetDefaults)
             {
-                Description = "Marks second-entry continuations and failed second-entry reversals. It never submits orders.";
+                Description = "Marks pivot-anchored first and second entries, HL/LH context, and failed second entries. It never submits orders.";
                 Name = "SecondEntryES";
                 Calculate = Calculate.OnBarClose;
                 IsOverlay = true;
                 DisplayInDataBox = false;
-                EmaPeriod = 20;
                 PivotStrength = 2;
                 BreakOffsetTicks = 1;
+                ResetOnEqualExtremes = true;
                 StrictSignalBars = true;
                 MinimumBodyPercent = 0.40;
                 StrongCloseZonePercent = 0.30;
-                MaxOppositeWickPercent = 0.40;
-                ResetOnEqualExtremes = true;
                 FailureWindowBars = 5;
-                TargetGuidePoints = 8;
-                ShowProjections = true;
                 ShowDiagnostics = false;
                 AlertsEnabled = true;
-                AddPlot(Brushes.Transparent, "LongEntry");
-                AddPlot(Brushes.Transparent, "ShortEntry");
             }
-            else if (State == State.DataLoaded)
-                trendEma = EMA(EmaPeriod);
         }
 
         protected override void OnBarUpdate()
         {
-            if (CurrentBar < Math.Max(EmaPeriod + PivotStrength + 2, 10)) return;
-            Values[0][0] = double.NaN;
-            Values[1][0] = double.NaN;
+            if (CurrentBar < 2 * PivotStrength + 2)
+                return;
 
-            bool upTrend = Close[0] >= trendEma[0] && trendEma[0] > trendEma[1];
-            bool downTrend = Close[0] <= trendEma[0] && trendEma[0] < trendEma[1];
-            bool downBar = Close[0] < Open[0];
-            bool upBar = Close[0] > Open[0];
-
-            // Count directional pullback attempts, resetting after a meaningful opposite bar.
-            if (downBar && upTrend)
-            {
-                if (downAttempts == 0 || Low[0] < lastPullbackLow - TickSize || (!ResetOnEqualExtremes && Low[0] <= lastPullbackLow + TickSize))
-                    downAttempts++;
-                lastPullbackLow = Low[0];
-            }
-            else if (upBar && upTrend && downAttempts > 0 && QualifiesSignalBar(true))
-            {
-                if (downAttempts >= 2) { pendingLongBar = CurrentBar; pendingLongLow = Low[0]; }
-            }
-
-            if (upBar && downTrend)
-            {
-                if (upAttempts == 0 || High[0] > lastPullbackHigh + TickSize || (!ResetOnEqualExtremes && High[0] >= lastPullbackHigh - TickSize))
-                    upAttempts++;
-                lastPullbackHigh = High[0];
-            }
-            else if (downBar && downTrend && upAttempts > 0 && QualifiesSignalBar(false))
-            {
-                if (upAttempts >= 2) { pendingShortBar = CurrentBar; pendingShortHigh = High[0]; }
-            }
-
-            // A candidate cannot trigger on its own signal bar.
-            if (pendingLongBar >= 0 && CurrentBar > pendingLongBar && High[0] >= High[CurrentBar - pendingLongBar] + BreakOffsetTicks * TickSize)
-            {
-                ConfirmLong(pendingLongBar, pendingLongLow, High[CurrentBar - pendingLongBar] + BreakOffsetTicks * TickSize);
-                pendingLongBar = -1; downAttempts = 0;
-            }
-            if (pendingShortBar >= 0 && CurrentBar > pendingShortBar && Low[0] <= Low[CurrentBar - pendingShortBar] - BreakOffsetTicks * TickSize)
-            {
-                ConfirmShort(pendingShortBar, pendingShortHigh, Low[CurrentBar - pendingShortBar] - BreakOffsetTicks * TickSize);
-                pendingShortBar = -1; upAttempts = 0;
-            }
-
-            if (longConfirmedBar >= 0 && CurrentBar - longConfirmedBar <= FailureWindowBars && Low[0] < longSignalLow)
-            { MarkFailure(false); longConfirmedBar = -1; }
-            else if (longConfirmedBar >= 0 && CurrentBar - longConfirmedBar > FailureWindowBars) longConfirmedBar = -1;
-            if (shortConfirmedBar >= 0 && CurrentBar - shortConfirmedBar <= FailureWindowBars && High[0] > shortSignalHigh)
-            { MarkFailure(true); shortConfirmedBar = -1; }
-            else if (shortConfirmedBar >= 0 && CurrentBar - shortConfirmedBar > FailureWindowBars) shortConfirmedBar = -1;
+            DetectConfirmedSwingAnchors();
+            TrackLongSequence();
+            TrackShortSequence();
+            DetectFailedSecondEntries();
 
             if (ShowDiagnostics)
-                Draw.TextFixed(this, "SecondEntryES.Debug", "Down attempts: " + downAttempts + " | Up attempts: " + upAttempts, TextPosition.TopLeft, Brushes.Gray, new SimpleFont("Arial", 12), Brushes.Transparent, Brushes.Transparent, 0);
+                Draw.TextFixed(this, "SecondEntryES.Debug",
+                    "Long pivot: " + longAnchorLow + " | long count: " + longCount +
+                    "\nShort pivot: " + shortAnchorHigh + " | short count: " + shortCount,
+                    TextPosition.TopLeft, Brushes.Gray, new SimpleFont("Arial", 12),
+                    Brushes.Transparent, Brushes.Transparent, 0);
         }
+
+        // A pivot is confirmed only after PivotStrength later bars.  Counts are
+        // anchored to the most recently confirmed low/high rather than an EMA.
+        private void DetectConfirmedSwingAnchors()
+        {
+            int barsAgo = PivotStrength;
+            if (Low[barsAgo] <= MIN(Low, 2 * PivotStrength + 1)[barsAgo])
+            {
+                longAnchorLow = Low[barsAgo];
+                longAnchorBar = CurrentBar - barsAgo;
+                longCount = 0;
+                longPullbackActive = false;
+            }
+
+            if (High[barsAgo] >= MAX(High, 2 * PivotStrength + 1)[barsAgo])
+            {
+                shortAnchorHigh = High[barsAgo];
+                shortAnchorBar = CurrentBar - barsAgo;
+                shortCount = 0;
+                shortPullbackActive = false;
+            }
+        }
+
+        private void TrackLongSequence()
+        {
+            if (longAnchorBar < 0 || CurrentBar <= longAnchorBar)
+                return;
+
+            if (Low[0] <= longAnchorLow + (ResetOnEqualExtremes ? 0 : -TickSize))
+            {
+                longAnchorLow = Low[0];
+                longAnchorBar = CurrentBar;
+                longCount = 0;
+                longPullbackActive = false;
+                return;
+            }
+
+            if (Close[0] < Open[0])
+            {
+                if (!longPullbackActive)
+                    longPullbackLow = Low[0];
+                else
+                    longPullbackLow = Math.Min(longPullbackLow, Low[0]);
+                longPullbackActive = true;
+                return;
+            }
+
+            if (longPullbackActive && BreaksPriorHigh() && QualifiesSignalBar(true))
+            {
+                longCount++;
+                if (longCount == 1)
+                {
+                    firstLongPullbackLow = longPullbackLow;
+                    Mark("1EL", true, 0, Low[0] - 2 * TickSize, Brushes.DodgerBlue);
+                }
+                else if (longCount == 2)
+                {
+                    Mark("2EL", true, 0, Low[0] - 2 * TickSize, Brushes.LimeGreen);
+                    if (longPullbackLow > firstLongPullbackLow + TickSize)
+                        Mark("HL", true, 0, longPullbackLow - TickSize, Brushes.Gold);
+                    else
+                        Mark("DT", true, 0, longPullbackLow - TickSize, Brushes.Orange);
+                    longConfirmedBar = CurrentBar;
+                    longSignalLow = longPullbackLow;
+                }
+                longPullbackActive = false;
+            }
+        }
+
+        private void TrackShortSequence()
+        {
+            if (shortAnchorBar < 0 || CurrentBar <= shortAnchorBar)
+                return;
+
+            if (High[0] >= shortAnchorHigh - (ResetOnEqualExtremes ? 0 : -TickSize))
+            {
+                shortAnchorHigh = High[0];
+                shortAnchorBar = CurrentBar;
+                shortCount = 0;
+                shortPullbackActive = false;
+                return;
+            }
+
+            if (Close[0] > Open[0])
+            {
+                if (!shortPullbackActive)
+                    shortPullbackHigh = High[0];
+                else
+                    shortPullbackHigh = Math.Max(shortPullbackHigh, High[0]);
+                shortPullbackActive = true;
+                return;
+            }
+
+            if (shortPullbackActive && BreaksPriorLow() && QualifiesSignalBar(false))
+            {
+                shortCount++;
+                if (shortCount == 1)
+                {
+                    firstShortPullbackHigh = shortPullbackHigh;
+                    Mark("1ES", false, 0, High[0] + 2 * TickSize, Brushes.MediumVioletRed);
+                }
+                else if (shortCount == 2)
+                {
+                    Mark("2ES", false, 0, High[0] + 2 * TickSize, Brushes.Red);
+                    if (shortPullbackHigh < firstShortPullbackHigh - TickSize)
+                        Mark("LH", false, 0, shortPullbackHigh + TickSize, Brushes.Gold);
+                    else
+                        Mark("DT", false, 0, shortPullbackHigh + TickSize, Brushes.Orange);
+                    shortConfirmedBar = CurrentBar;
+                    shortSignalHigh = shortPullbackHigh;
+                }
+                shortPullbackActive = false;
+            }
+        }
+
+        private void DetectFailedSecondEntries()
+        {
+            if (longConfirmedBar >= 0 && CurrentBar - longConfirmedBar <= FailureWindowBars && Low[0] < longSignalLow)
+            {
+                Mark("F2EL", false, 0, High[0] + 2 * TickSize, Brushes.Orange);
+                longConfirmedBar = -1;
+            }
+            else if (longConfirmedBar >= 0 && CurrentBar - longConfirmedBar > FailureWindowBars)
+                longConfirmedBar = -1;
+
+            if (shortConfirmedBar >= 0 && CurrentBar - shortConfirmedBar <= FailureWindowBars && High[0] > shortSignalHigh)
+            {
+                Mark("F2ES", true, 0, Low[0] - 2 * TickSize, Brushes.DodgerBlue);
+                shortConfirmedBar = -1;
+            }
+            else if (shortConfirmedBar >= 0 && CurrentBar - shortConfirmedBar > FailureWindowBars)
+                shortConfirmedBar = -1;
+        }
+
+        private bool BreaksPriorHigh() { return High[0] >= High[1] + BreakOffsetTicks * TickSize; }
+        private bool BreaksPriorLow() { return Low[0] <= Low[1] - BreakOffsetTicks * TickSize; }
 
         private bool QualifiesSignalBar(bool isLong)
         {
@@ -178,36 +248,17 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (range <= 0) return false;
             double body = Math.Abs(Close[0] - Open[0]) / range;
             if (body < MinimumBodyPercent) return false;
-            if (isLong) return (High[0] - Close[0]) / range <= StrongCloseZonePercent && (Open[0] - Low[0]) / range <= MaxOppositeWickPercent;
-            return (Close[0] - Low[0]) / range <= StrongCloseZonePercent && (High[0] - Open[0]) / range <= MaxOppositeWickPercent;
+            return isLong
+                ? (High[0] - Close[0]) / range <= StrongCloseZonePercent
+                : (Close[0] - Low[0]) / range <= StrongCloseZonePercent;
         }
 
-        private void ConfirmLong(int bar, double stop, double entry)
+        private void Mark(string label, bool isLong, int barsAgo, double price, Brush color)
         {
-            int barsAgo = CurrentBar - bar;
-            Values[0][0] = entry;
-            Draw.Text(this, "2EL." + bar, "2EL", barsAgo, Low[barsAgo] - 2 * TickSize, Brushes.LimeGreen);
-            if (ShowProjections) { Draw.HorizontalLine(this, "2EL.E." + bar, entry, Brushes.LimeGreen); Draw.HorizontalLine(this, "2EL.S." + bar, stop - TickSize, Brushes.OrangeRed); Draw.HorizontalLine(this, "2EL.T." + bar, entry + TargetGuidePoints, Brushes.DodgerBlue); }
-            if (AlertsEnabled) Alert("2EL." + bar, Priority.Medium, "SecondEntryES 2EL " + Instrument.FullName, NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert1.wav", 0, Brushes.LimeGreen, Brushes.Black);
-            longConfirmedBar = CurrentBar; longSignalLow = stop;
-        }
-
-        private void ConfirmShort(int bar, double stop, double entry)
-        {
-            int barsAgo = CurrentBar - bar;
-            Values[1][0] = entry;
-            Draw.Text(this, "2ES." + bar, "2ES", barsAgo, High[barsAgo] + 2 * TickSize, Brushes.Red);
-            if (ShowProjections) { Draw.HorizontalLine(this, "2ES.E." + bar, entry, Brushes.Red); Draw.HorizontalLine(this, "2ES.S." + bar, stop + TickSize, Brushes.OrangeRed); Draw.HorizontalLine(this, "2ES.T." + bar, entry - TargetGuidePoints, Brushes.DodgerBlue); }
-            if (AlertsEnabled) Alert("2ES." + bar, Priority.Medium, "SecondEntryES 2ES " + Instrument.FullName, NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert1.wav", 0, Brushes.Red, Brushes.White);
-            shortConfirmedBar = CurrentBar; shortSignalHigh = stop;
-        }
-
-        private void MarkFailure(bool failedShort)
-        {
-            string label = failedShort ? "F2ES" : "F2EL";
-            double price = failedShort ? Low[0] - 2 * TickSize : High[0] + 2 * TickSize;
-            Draw.Text(this, label + "." + CurrentBar, label, 0, price, failedShort ? Brushes.DodgerBlue : Brushes.Orange);
-            if (AlertsEnabled) Alert(label + "." + CurrentBar, Priority.Medium, "SecondEntryES " + label + " " + Instrument.FullName, NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert2.wav", 0, Brushes.Gold, Brushes.Black);
+            Draw.Text(this, label + "." + CurrentBar + "." + barsAgo, label, barsAgo, price, color);
+            if (AlertsEnabled && (label == "2EL" || label == "2ES" || label == "F2EL" || label == "F2ES"))
+                Alert(label + "." + CurrentBar, Priority.Medium, "SecondEntryES " + label + " " + Instrument.FullName,
+                    NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert1.wav", 0, color, Brushes.Black);
         }
     }
 }
