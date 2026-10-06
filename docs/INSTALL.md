@@ -1,6 +1,6 @@
 # Install and test
 
-1. Download `SecondEntryES-NinjaTrader8.zip` to Desktop.
+1. Download `SecondEntryES-NinjaTrader8.zip` to Desktop. Do not unzip it; a valid NT8 archive contains `Info.xml` and `Indicators\\SecondEntryES.cs`.
 2. In NinjaTrader 8 Control Center: **Tools → Import → NinjaScript Add-On**.
 3. Select the ZIP and allow NinjaTrader to compile it.
 4. Open an ES 2,000-tick chart; right-click → **Indicators** → **SecondEntryES**.

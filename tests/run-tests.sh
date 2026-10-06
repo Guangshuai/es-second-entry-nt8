@@ -1,5 +1,7 @@
 #!/usr/bin/env sh
 set -eu
+"$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/../scripts/build-ninjatrader-archive.sh"
+"$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/verify-ninjatrader-archive.sh"
 if command -v dotnet >/dev/null 2>&1 || command -v csc >/dev/null 2>&1 || command -v mcs >/dev/null 2>&1; then
   echo "A local C# compiler exists, but NinjaTrader 8 assemblies are required for the integration compile. Run the NT8 checklist in docs/INSTALL.md."
   exit 0

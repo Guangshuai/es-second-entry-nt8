@@ -5,7 +5,7 @@ It marks `2EL`, `2ES`, `F2EL`, and `F2ES` price-action events. It never places o
 
 ## Quick start
 
-1. Download [`SecondEntryES-NinjaTrader8.zip`](https://github.com/Guangshuai/es-second-entry-nt8/releases/download/v0.1.0/SecondEntryES-NinjaTrader8.zip).
+1. Download [`SecondEntryES-NinjaTrader8.zip`](https://github.com/Guangshuai/es-second-entry-nt8/releases/latest/download/SecondEntryES-NinjaTrader8.zip).
 2. In NinjaTrader 8, choose **Tools → Import → NinjaScript Add-On** and select the ZIP.
 3. Open an ES 2,000-tick chart, add **SecondEntryES**, then use Playback or Market Replay.
 
